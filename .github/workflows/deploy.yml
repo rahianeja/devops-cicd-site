@@ -1,0 +1,59 @@
+name: CI/CD to S3 + CloudFront
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Run tests
+        run: bash tests/test.sh
+
+  build:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Package site
+        run: |
+          mkdir dist
+          cp index.html style.css script.js dist/
+          echo "commit: ${{ github.sha }}" > dist/build-info.txt
+          echo "run: ${{ github.run_number }}" >> dist/build-info.txt
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: site
+          path: dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    env:
+      CF_ID: ${{ secrets.CF_DISTRIBUTION_ID }}
+    steps:
+      - name: Download artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: site
+          path: dist
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ap-south-1
+      - name: Deploy to S3
+        run: aws s3 sync dist/ s3://${{ secrets.S3_BUCKET }} --delete --cache-control "max-age=60"
+      - name: Invalidate CloudFront cache
+        if: env.CF_ID != ''
+        run: aws cloudfront create-invalidation --distribution-id "$CF_ID" --paths "/*"
+      - name: CloudFront not configured
+        if: env.CF_ID == ''
+        run: echo "CloudFront not configured yet, skipping invalidation"
